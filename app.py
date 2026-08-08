@@ -126,6 +126,20 @@ def fetch_volume_data(symbol, period, interval, avg_window):
     df.dropna(inplace=True)
     return df
 
+def format_age(age_min):
+    if age_min < 1:
+        return "இப்போதுதான்"
+    if age_min < 60:
+        return f"{age_min} நிமிடம் முன்பு"
+    if age_min < 1440:
+        hours = age_min // 60
+        mins = age_min % 60
+        if mins == 0:
+            return f"{hours} மணி நேரம் முன்பு"
+        return f"{hours} மணி {mins} நிமிடம் முன்பு"
+    days = age_min // 1440
+    return f"{days} நாள் முன்பு"
+
 def scan_markets(tickers_dict, period, interval, avg_window, threshold):
     rows = []
     charts = {}
@@ -144,7 +158,7 @@ def scan_markets(tickers_dict, period, interval, avg_window, threshold):
             "RVOL": rvol,
             "Status": "🔥 SPIKE" if rvol >= threshold else "Normal",
             "Last Update": df.index[-1].strftime("%d-%b %H:%M IST"),
-            "Data Age": f"{age_min} நிமிடம் முன்பு" if age_min < 1440 else f"{age_min // 1440} நாள் முன்பு",
+            "Data Age": format_age(age_min),
         })
         charts[name] = df
     return pd.DataFrame(rows), charts
