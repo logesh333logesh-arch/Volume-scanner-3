@@ -50,7 +50,11 @@ for sym in CUSTOM_STOCKS:
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
+    resp = requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
+    if not resp.ok:
+        print("Telegram send FAILED:", resp.status_code, resp.text)
+    else:
+        print("Telegram send OK")
 
 
 def check_spikes():
@@ -87,10 +91,15 @@ def check_spikes():
 
 if __name__ == "__main__":
     spikes = check_spikes()
+    now = datetime.now(IST).strftime("%d-%b %H:%M IST")
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "manual")
+
     if spikes:
-        now = datetime.now(IST).strftime("%d-%b %H:%M IST")
         message = f"📊 <b>Volume Spike Alert</b> ({now})\n\n" + "\n".join(spikes)
         send_telegram(message)
         print("Alert sent:", spikes)
+    elif event_name == "workflow_dispatch":
+        send_telegram(f"✅ Test message — Scanner சரியா connect ஆயிருக்கு! ({now})\nஇப்போ எந்த market-லயும் spike இல்ல.")
+        print("Test message sent (manual run, no spikes right now).")
     else:
-        print("No spikes found at", datetime.now(IST).strftime("%H:%M IST"))
+        print("No spikes found at", now)
