@@ -1,8 +1,9 @@
 """
-TELEGRAM VOLUME SPIKE ALERT
-=============================
-GitHub Actions மூலமா ஒவ்வொரு 15 நிமிடமும் தானாகவே run ஆகும்.
-Spike இருந்தா Telegram-க்கு message அனுப்பும் — App திறக்கவே வேண்டாம்.
+COMBINED VOLUME + PRICE SPIKE SCANNER — Telegram Alerts
+============================================================
+Ovvoru Run-லயும் ovvoru Instrument-ஓட RVOL & Price Change-ஐ Print பண்ணும்
+(Debug பண்ண Easy-ஆ இருக்க). Volume Spike ஆனாலும், Price Spike ஆனாலும்
+Telegram-க்கு Alert அனுப்பும்.
 """
 
 import os
@@ -18,17 +19,18 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 # -----------------------------------------------------------
-# SETTINGS — வேணும்னா இங்க மாத்திக்கலாம்
+# SETTINGS
 # -----------------------------------------------------------
-INTERVAL = "60m"       # yfinance-க்கு 1 hour = "60m"
+INTERVAL = "60m"          # yfinance-க்கு 1 hour = "60m"
 PERIOD = "1mo"
 AVG_WINDOW = 20
-SPIKE_THRESHOLD = 2.0  # 2x = சராசரியை விட 2 மடங்கு
+VOLUME_THRESHOLD = 2.0    # RVOL 2x-க்கு மேல = Volume Spike
+PRICE_THRESHOLD = 1.0     # 1 Candle-ல் 1%-க்கு மேல Move = Price Spike
 
 MARKET_TICKERS = {
-    "NIFTY 50":            "^NSEI",
-    "BANK NIFTY":          "^NSEBANK",
-    "SENSEX":              "^BSESN",
+    "NIFTY 50":            "NIFTYBEES.NS",   # Raw ^NSEI-க்கு Volume Data இல்ல, ETF Proxy
+    "BANK NIFTY":          "BANKBEES.NS",
+    "SENSEX":              "SENSEXETF.NS",
     "FIN NIFTY":           "NIFTY_FIN_SERVICE.NS",
     "US INDEX (S&P 500)":  "^GSPC",
     "BITCOIN":             "BTC-USD",
@@ -40,9 +42,7 @@ MARKET_TICKERS = {
     "NATURAL GAS":         "NG=F",
 }
 
-# -----------------------------------------------------------
-# உன் Stocks — இங்க max 20 stocks type பண்ணு (.NS தானா சேர்க்கும்)
-# -----------------------------------------------------------
+# உன் Stocks — இங்க Max 20 Stocks Type பண்ணு (.NS தானா சேர்க்கும்)
 CUSTOM_STOCKS = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"]
 for sym in CUSTOM_STOCKS:
     MARKET_TICKERS[sym] = sym if "." in sym else sym + ".NS"
@@ -52,54 +52,82 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     resp = requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
     if not resp.ok:
-        print("Telegram send FAILED:", resp.status_code, resp.text)
+        print("‼️ Telegram send FAILED:", resp.status_code, resp.text)
     else:
-        print("Telegram send OK")
+        print("✅ Telegram send OK")
 
 
-def check_spikes():
-    spikes = []
-    for name, symbol in MARKET_TICKERS.items():
-        try:
-            df = yf.download(symbol, period=PERIOD, interval=INTERVAL,
-                              progress=False, auto_adjust=True)
-            if df.empty:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            if "Volume" not in df.columns:
-                continue
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC").tz_convert(IST)
-            else:
-                df.index = df.index.tz_convert(IST)
-            df["Avg_Volume"] = df["Volume"].rolling(window=AVG_WINDOW).mean()
-            df["RVOL"] = df["Volume"] / df["Avg_Volume"]
-            df.dropna(inplace=True)
-            if df.empty:
-                continue
-            latest = df.iloc[-1]
-            rvol = float(latest["RVOL"])
-            price = float(latest["Close"])
-            if rvol >= SPIKE_THRESHOLD:
-                spikes.append(f"🔥 <b>{name}</b> — RVOL {rvol:.2f}x | Price {price:,.2f}")
-        except Exception as e:
-            print(f"{name} skip: {e}")
-            continue
-    return spikes
+def analyze(name, symbol):
+    try:
+        df = yf.download(symbol, period=PERIOD, interval=INTERVAL, progress=False, auto_adjust=True)
+    except Exception as e:
+        print(f"{name} ({symbol}): DOWNLOAD ERROR — {e}")
+        return None
+
+    if df.empty:
+        print(f"{name} ({symbol}): No data returned")
+        return None
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    if "Volume" not in df.columns or "Close" not in df.columns:
+        print(f"{name} ({symbol}): Missing Volume/Close columns")
+        return None
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC").tz_convert(IST)
+    else:
+        df.index = df.index.tz_convert(IST)
+
+    df["Avg_Volume"] = df["Volume"].rolling(window=AVG_WINDOW).mean()
+    df["RVOL"] = df["Volume"] / df["Avg_Volume"]
+    df["Pct_Change"] = df["Close"].pct_change() * 100
+    df.dropna(subset=["RVOL"], inplace=True)
+
+    if df.empty:
+        print(f"{name} ({symbol}): Not enough history for {AVG_WINDOW}-bar average yet")
+        return None
+
+    latest = df.iloc[-1]
+    rvol = float(latest["RVOL"])
+    pct_change = float(latest["Pct_Change"]) if not pd.isna(latest["Pct_Change"]) else 0.0
+    price = float(latest["Close"])
+
+    # Debug Log — ஒவ்வொரு Instrument-க்கும் Exact Value இதுல தெரியும்
+    print(f"{name:22s} | RVOL={rvol:5.2f}x | Price%={pct_change:+6.2f}% | Price={price:,.2f}")
+
+    tags = []
+    if rvol >= VOLUME_THRESHOLD:
+        tags.append(f"📊 Volume Spike ({rvol:.2f}x)")
+    if abs(pct_change) >= PRICE_THRESHOLD:
+        direction = "📈" if pct_change > 0 else "📉"
+        tags.append(f"{direction} Price Spike ({pct_change:+.2f}%)")
+
+    if tags:
+        return f"🔥 <b>{name}</b>\n{' | '.join(tags)}\nPrice: {price:,.2f}"
+    return None
 
 
 if __name__ == "__main__":
-    spikes = check_spikes()
+    print(f"=== Scan Started: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S IST')} ===")
+    alerts = []
+    for name, symbol in MARKET_TICKERS.items():
+        result = analyze(name, symbol)
+        if result:
+            alerts.append(result)
+
     now = datetime.now(IST).strftime("%d-%b %H:%M IST")
     event_name = os.environ.get("GITHUB_EVENT_NAME", "manual")
 
-    if spikes:
-        message = f"📊 <b>Volume Spike Alert</b> ({now})\n\n" + "\n".join(spikes)
+    if alerts:
+        message = f"🚨 <b>Spike Alert</b> ({now})\n\n" + "\n\n".join(alerts)
         send_telegram(message)
-        print("Alert sent:", spikes)
+        print(f"\n{len(alerts)} Alert(s) sent")
     elif event_name == "workflow_dispatch":
-        send_telegram(f"✅ Test message — Scanner சரியா connect ஆயிருக்கு! ({now})\nஇப்போ எந்த market-லயும் spike இல்ல.")
-        print("Test message sent (manual run, no spikes right now).")
+        send_telegram(f"✅ Test message — Scanner சரியா Connect ஆயிருக்கு! ({now})\nஇப்போ Volume/Price Spike எதுவும் இல்ல.")
+        print("\nTest message sent (manual run, no spikes right now)")
     else:
-        print("No spikes found at", now)
+        print(f"\nNo spikes at {now}")
+
+    print("=== Scan Complete ===")
