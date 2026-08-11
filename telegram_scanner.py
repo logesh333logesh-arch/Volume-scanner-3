@@ -24,7 +24,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 INTERVAL = "60m"          # yfinance-க்கு 1 hour = "60m"
 PERIOD = "1mo"
 AVG_WINDOW = 20
-VOLUME_THRESHOLD = 2.0    # RVOL 2x-க்கு மேல = Volume Spike
+Z_THRESHOLD = 2.0         # Volume, Average-ல இருந்து 2 Standard Deviations மேல போனா = Spike
 PRICE_THRESHOLD = 1.0     # 1 Candle-ல் 1%-க்கு மேல Move = Price Spike
 
 MARKET_TICKERS = {
@@ -81,9 +81,11 @@ def analyze(name, symbol):
         df.index = df.index.tz_convert(IST)
 
     df["Avg_Volume"] = df["Volume"].rolling(window=AVG_WINDOW).mean()
+    df["Std_Volume"] = df["Volume"].rolling(window=AVG_WINDOW).std()
     df["RVOL"] = df["Volume"] / df["Avg_Volume"]
+    df["Volume_Zscore"] = (df["Volume"] - df["Avg_Volume"]) / df["Std_Volume"].replace(0, pd.NA)
     df["Pct_Change"] = df["Close"].pct_change() * 100
-    df.dropna(subset=["RVOL"], inplace=True)
+    df.dropna(subset=["RVOL", "Volume_Zscore"], inplace=True)
 
     if df.empty:
         print(f"{name} ({symbol}): Not enough history for {AVG_WINDOW}-bar average yet")
@@ -91,15 +93,22 @@ def analyze(name, symbol):
 
     latest = df.iloc[-1]
     rvol = float(latest["RVOL"])
+    zscore = float(latest["Volume_Zscore"])
     pct_change = float(latest["Pct_Change"]) if not pd.isna(latest["Pct_Change"]) else 0.0
     price = float(latest["Close"])
 
     # Debug Log — ஒவ்வொரு Instrument-க்கும் Exact Value இதுல தெரியும்
-    print(f"{name:22s} | RVOL={rvol:5.2f}x | Price%={pct_change:+6.2f}% | Price={price:,.2f}")
+    print(f"{name:22s} | RVOL={rvol:5.2f}x | Z-score={zscore:+5.2f}σ | Price%={pct_change:+6.2f}% | Price={price:,.2f}")
 
     tags = []
-    if rvol >= VOLUME_THRESHOLD:
-        tags.append(f"📊 Volume Spike ({rvol:.2f}x)")
+    if zscore >= Z_THRESHOLD:
+        if pct_change > 0.05:
+            vol_direction = "🟢 Bullish"
+        elif pct_change < -0.05:
+            vol_direction = "🔴 Bearish"
+        else:
+            vol_direction = "⚪ Neutral"
+        tags.append(f"📊 {vol_direction} Volume Spike (RVOL {rvol:.2f}x, Unusual by {zscore:.1f}σ)")
     if abs(pct_change) >= PRICE_THRESHOLD:
         direction = "📈" if pct_change > 0 else "📉"
         tags.append(f"{direction} Price Spike ({pct_change:+.2f}%)")
