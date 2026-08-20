@@ -21,8 +21,8 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 # -----------------------------------------------------------
 # SETTINGS
 # -----------------------------------------------------------
-INTERVAL = "60m"          # yfinance-க்கு 1 hour = "60m"
-PERIOD = "1mo"
+INTERVAL = "15m"          # yfinance-க்கு 15 minutes = "15m"  (60m-ல இருந்து மாத்தப்பட்டது — delay fix)
+PERIOD = "1mo"             # 15m data-க்கு yfinance max 60 days தரும், 1mo (30 days) அதுக்குள்ள வரும்
 AVG_WINDOW = 20
 Z_THRESHOLD = 2.0         # Volume, Average-ல இருந்து 2 Standard Deviations மேல போனா = Spike
 PRICE_THRESHOLD = 1.0     # 1 Candle-ல் 1%-க்கு மேல Move = Price Spike
