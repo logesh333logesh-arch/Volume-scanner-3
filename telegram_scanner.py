@@ -1,9 +1,6 @@
 """
 COMBINED VOLUME + PRICE SPIKE SCANNER — Telegram Alerts
 ============================================================
-Ovvoru Run-லயும் ovvoru Instrument-ஓட RVOL & Price Change-ஐ Print பண்ணும்
-(Debug பண்ண Easy-ஆ இருக்க). Volume Spike ஆனாலும், Price Spike ஆனாலும்
-Telegram-க்கு Alert அனுப்பும்.
 """
 
 import os
@@ -21,14 +18,14 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 # -----------------------------------------------------------
 # SETTINGS
 # -----------------------------------------------------------
-INTERVAL = "15m"          # yfinance-க்கு 15 minutes = "15m"  (60m-ல இருந்து மாத்தப்பட்டது — delay fix)
-PERIOD = "1mo"             # 15m data-க்கு yfinance max 60 days தரும், 1mo (30 days) அதுக்குள்ள வரும்
+INTERVAL = "15m"
+PERIOD = "1mo"
 AVG_WINDOW = 20
-Z_THRESHOLD = 2.0         # Volume, Average-ல இருந்து 2 Standard Deviations மேல போனா = Spike
-PRICE_THRESHOLD = 1.0     # 1 Candle-ல் 1%-க்கு மேல Move = Price Spike
+Z_THRESHOLD = 2.0
+PRICE_THRESHOLD = 1.0
 
 MARKET_TICKERS = {
-    "NIFTY 50":            "NIFTYBEES.NS",   # Raw ^NSEI-க்கு Volume Data இல்ல, ETF Proxy
+    "NIFTY 50":            "NIFTYBEES.NS",
     "BANK NIFTY":          "BANKBEES.NS",
     "SENSEX":              "SENSEXETF.NS",
     "FIN NIFTY":           "NIFTY_FIN_SERVICE.NS",
@@ -42,7 +39,6 @@ MARKET_TICKERS = {
     "NATURAL GAS":         "NG=F",
 }
 
-# உன் Stocks — இங்க Max 20 Stocks Type பண்ணு (.NS தானா சேர்க்கும்)
 CUSTOM_STOCKS = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"]
 for sym in CUSTOM_STOCKS:
     MARKET_TICKERS[sym] = sym if "." in sym else sym + ".NS"
@@ -62,18 +58,18 @@ def analyze(name, symbol):
         df = yf.download(symbol, period=PERIOD, interval=INTERVAL, progress=False, auto_adjust=True)
     except Exception as e:
         print(f"{name} ({symbol}): DOWNLOAD ERROR — {e}")
-        return None
+        return None, None
 
     if df.empty:
         print(f"{name} ({symbol}): No data returned")
-        return None
+        return None, None
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     if "Volume" not in df.columns or "Close" not in df.columns:
         print(f"{name} ({symbol}): Missing Volume/Close columns")
-        return None
+        return None, None
 
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC").tz_convert(IST)
@@ -89,16 +85,17 @@ def analyze(name, symbol):
 
     if df.empty:
         print(f"{name} ({symbol}): Not enough history for {AVG_WINDOW}-bar average yet")
-        return None
+        return None, None
 
     latest = df.iloc[-1]
+    latest_time = df.index[-1].strftime("%H:%M")
     rvol = float(latest["RVOL"])
     zscore = float(latest["Volume_Zscore"])
     pct_change = float(latest["Pct_Change"]) if not pd.isna(latest["Pct_Change"]) else 0.0
     price = float(latest["Close"])
 
-    # Debug Log — ஒவ்வொரு Instrument-க்கும் Exact Value இதுல தெரியும்
-    print(f"{name:22s} | RVOL={rvol:5.2f}x | Z-score={zscore:+5.2f}σ | Price%={pct_change:+6.2f}% | Price={price:,.2f}")
+    debug_row = f"{name:14s} {latest_time} | RVOL={rvol:4.2f}x | Z={zscore:+4.2f}σ | Chg={pct_change:+5.2f}%"
+    print(debug_row)
 
     tags = []
     if zscore >= Z_THRESHOLD:
@@ -113,18 +110,23 @@ def analyze(name, symbol):
         direction = "📈" if pct_change > 0 else "📉"
         tags.append(f"{direction} Price Spike ({pct_change:+.2f}%)")
 
+    alert_msg = None
     if tags:
-        return f"🔥 <b>{name}</b>\n{' | '.join(tags)}\nPrice: {price:,.2f}"
-    return None
+        alert_msg = f"🔥 <b>{name}</b>\n{' | '.join(tags)}\nCandle: {latest_time} IST | Price: {price:,.2f}"
+
+    return alert_msg, (name, latest_time, rvol, zscore, pct_change)
 
 
 if __name__ == "__main__":
     print(f"=== Scan Started: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S IST')} ===")
     alerts = []
+    debug_rows = []
     for name, symbol in MARKET_TICKERS.items():
-        result = analyze(name, symbol)
-        if result:
-            alerts.append(result)
+        alert_msg, dbg = analyze(name, symbol)
+        if alert_msg:
+            alerts.append(alert_msg)
+        if dbg:
+            debug_rows.append(dbg)
 
     now = datetime.now(IST).strftime("%d-%b %H:%M IST")
     event_name = os.environ.get("GITHUB_EVENT_NAME", "manual")
@@ -134,8 +136,13 @@ if __name__ == "__main__":
         send_telegram(message)
         print(f"\n{len(alerts)} Alert(s) sent")
     elif event_name == "workflow_dispatch":
-        send_telegram(f"✅ Test message — Scanner சரியா Connect ஆயிருக்கு! ({now})\nஇப்போ Volume/Price Spike எதுவும் இல்ல.")
-        print("\nTest message sent (manual run, no spikes right now)")
+        # Manual run: top-5 RVOL debug snapshot Telegram-க்கு அனுப்பும்
+        debug_rows.sort(key=lambda r: r[3], reverse=True)
+        top5 = debug_rows[:5]
+        lines = [f"{n} ({t} IST): RVOL {r:.2f}x | Z {z:+.2f}σ | {p:+.2f}%" for n, t, r, z, p in top5]
+        debug_msg = f"✅ Scanner Connect ஆயிருக்கு! ({now})\nஇப்போ Spike இல்ல. Top RVOL:\n\n" + "\n".join(lines)
+        send_telegram(debug_msg)
+        print("\nTest/debug message sent")
     else:
         print(f"\nNo spikes at {now}")
 
