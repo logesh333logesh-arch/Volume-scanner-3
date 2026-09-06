@@ -1,7 +1,30 @@
 """
-COMBINED VOLUME + PRICE SPIKE SCANNER — Telegram Alerts (v5)
+COMBINED VOLUME + PRICE SPIKE SCANNER — Telegram Alerts (v7)
 ================================================================
-V5 Changes (Trend-Capture Speed மேம்படுத்த):
+V7 Changes — 4-Symbol Legend (Tier + Direction ஒரே Emoji-ல):
+    🔵 EARLY, Bullish (Buy)
+    🟣 EARLY, Bearish (Sell)
+    🟢 CONFIRMED, Bullish (Buy)
+    🔴 CONFIRMED, Bearish (Sell)
+ஒரே Emoji Paatha, Tier + Direction ரெண்டும் உடனே தெரியும் — தனியா
+Text படிக்க வேண்டாம்.
+
+--- Previous V6 Changes (Volume-Led Early Trigger) ---
+User Feedback: SOLANA-ல 08:30 Candle-லேயே பெரிய Volume+Price Move
+Start ஆனாலும், Alert 09:00 Candle-க்கு தான் வந்துச்சு — Move-ஓட
+Climax/Final Burst-ல தான் Alert Fire ஆச்சு, Start-ல இல்ல.
+
+Root Cause: EARLY Tier-க்கு Price Threshold 1.0% வெச்சிருந்தோம் —
+15 நிமிஷத்துக்குள் Full 1% Move ஆகணும்-ன்னு High Bar. Volume Price-க்கு
+முன்னாடி Lead எடுக்கும், ஆனா Price 1% Move ஆக நேரம் ஆகும், அதனால
+Move-ஓட Later Stage-ல தான் Alert Trigger ஆகுது.
+
+Fix: EARLY_PRICE_THRESHOLD 1.0% → 0.1% (Volume-Led) — Volume Z-Score
+Spike-கூட ஒரு சின்ன Directional Move இருந்தாலே Early Alert Fire ஆகும்.
+⚠️ இந்த Low Threshold Backtest பண்ணல் — Timeliness-க்காக Trade-Off
+பண்றோம், Alert Frequency அதிகரிக்கும்.
+
+--- Previous V5 Changes (Trend-Capture Speed மேம்படுத்த) ---
 1. Interval 60m → 15m — Candle Size குறைச்சு, Detection Speed 4x
    வேகமா ஆகுது (Max Delay 60 நிமிஷத்துலருந்து 15 நிமிஷமா குறையுது)
 2. Dual-Tier Alerts — ஒரே Signal-க்கு 2 Message வரும்:
@@ -46,7 +69,7 @@ PERIOD = "1mo"
 AVG_WINDOW = 80          # 20 Hours Equivalent (80 x 15min = 20hr)
 TREND_WINDOW = 200       # 50 Hours Equivalent (200 x 15min = 50hr)
 Z_THRESHOLD = 2.0
-PRICE_THRESHOLD = 1.0    # ⚠️ 60m-க்கு Backtest பண்ணது, 15m-க்கு Re-Test பண்ணல
+EARLY_PRICE_THRESHOLD = 0.1   # Volume-Led — Full 1% Wait பண்ணாம, சின்ன Directional Move போதும்
 MOVE_MIN = 0.05
 
 # Backtest Data Base பண்ணி Direction Rule
@@ -114,7 +137,7 @@ def evaluate_row(row, name):
     price = float(row["Close"])
     trend = "up" if price > float(row["MA_Trend"]) else "down"
     direction = "up" if pct > MOVE_MIN else ("down" if pct < -MOVE_MIN else None)
-    both = (zscore >= Z_THRESHOLD) and (abs(pct) >= PRICE_THRESHOLD)
+    both = (zscore >= Z_THRESHOLD) and (abs(pct) >= EARLY_PRICE_THRESHOLD)
     rule = required_direction_rule(name)
     if direction is None:
         dir_ok = False
@@ -176,10 +199,12 @@ def analyze(name, symbol, state):
     # ---------- 🟡 EARLY ALERT — Spike Candle-லேயே உடனே ----------
     if sig_C["both"] and sig_C["dir_ok"] and state["EARLY"].get(name) != C_time:
         rule_label = "Trend-Aligned" if sig_C["rule"] == "trend" else "Contrarian"
-        word = "Bullish" if sig_C["direction"] == "up" else "Bearish"
+        is_bull = sig_C["direction"] == "up"
+        emoji = "🔵" if is_bull else "🟣"
+        dir_word = "BUY (Bullish)" if is_bull else "SELL (Bearish)"
         msg = (
-            f"🟡 <b>{name}</b> — EARLY (Unconfirmed)\n"
-            f"{word} Volume+Price Spike (RVOL {sig_C['rvol']:.2f}x, {sig_C['zscore']:.1f}\u03c3, {sig_C['pct']:+.2f}%) — {rule_label}\n"
+            f"{emoji} <b>{name}</b> — EARLY, {dir_word}\n"
+            f"Volume+Price Spike (RVOL {sig_C['rvol']:.2f}x, {sig_C['zscore']:.1f}\u03c3, {sig_C['pct']:+.2f}%) — {rule_label}\n"
             f"Candle: {df.index[-2].strftime('%H:%M IST')} | Price: {sig_C['price']:,.2f}"
         )
         outputs.append(("EARLY", name, C_time, msg))
@@ -190,10 +215,12 @@ def analyze(name, symbol, state):
     continues = (sig_P["direction"] is not None) and (sig_C["direction"] == sig_P["direction"])
     if was_early and not_confirmed_yet and continues:
         rule_label = "Trend-Aligned" if sig_P["rule"] == "trend" else "Contrarian"
-        word = "Bullish" if sig_P["direction"] == "up" else "Bearish"
+        is_bull = sig_P["direction"] == "up"
+        emoji = "🟢" if is_bull else "🔴"
+        dir_word = "BUY (Bullish)" if is_bull else "SELL (Bearish)"
         msg = (
-            f"🟢 <b>{name}</b> — CONFIRMED\n"
-            f"{word} Volume+Price Spike (RVOL {sig_P['rvol']:.2f}x, {sig_P['zscore']:.1f}\u03c3, {sig_P['pct']:+.2f}%) — {rule_label}, Confirmed\n"
+            f"{emoji} <b>{name}</b> — CONFIRMED, {dir_word}\n"
+            f"Volume+Price Spike (RVOL {sig_P['rvol']:.2f}x, {sig_P['zscore']:.1f}\u03c3, {sig_P['pct']:+.2f}%) — {rule_label}, Confirmed\n"
             f"Spike: {df.index[-3].strftime('%H:%M IST')} | Confirmed: {df.index[-2].strftime('%H:%M IST')} | Price: {sig_P['price']:,.2f}"
         )
         outputs.append(("CONFIRMED", name, P_time, msg))
@@ -227,11 +254,11 @@ if __name__ == "__main__":
     all_alerts = early_alerts + confirmed_alerts
 
     if all_alerts:
-        message = f"🚨 <b>Spike Alert (v5 — Dual-Tier, 15m)</b> ({now})\n\n" + "\n\n".join(all_alerts)
+        message = f"🚨 <b>Spike Alert (v7)</b> ({now})\n\n" + "\n\n".join(all_alerts)
         send_telegram(message)
         print(f"\n{len(early_alerts)} Early + {len(confirmed_alerts)} Confirmed Alert(s) sent")
     elif event_name == "workflow_dispatch":
-        send_telegram(f"✅ Test message — Scanner v5 (15m, Dual-Tier) சரியா Connect ஆயிருக்கு! ({now})\nஇப்போ Spike எதுவும் இல்ல.")
+        send_telegram(f"✅ Test message — Scanner v7 (🔵🟣 Early / 🟢🔴 Confirmed) சரியா Connect ஆயிருக்கு! ({now})\nஇப்போ Spike எதுவும் இல்ல.")
         print("\nTest message sent (manual run)")
     else:
         print(f"\nNo new alerts at {now}")
